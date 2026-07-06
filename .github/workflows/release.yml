@@ -49,8 +49,14 @@ jobs:
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
+      # versions:set makes the tag the source of truth so the generated plugin.xml's
+      # pluginVersion matches oie.json (otherwise the engine reports the pom version as
+      # "installed" and the store shows a perpetual update). build.sh's `mvn clean` does
+      # not revert the pom edit, so the set version carries into the build.
       - name: Build plugin bundle
-        run: ./build.sh
+        run: |
+          mvn -B -ntp versions:set -DnewVersion="${{ steps.ver.outputs.version }}" -DprocessAllModules=true -DgenerateBackupPoms=false
+          ./build.sh
 
       - name: Stage the release asset and checksum
         id: pkg
