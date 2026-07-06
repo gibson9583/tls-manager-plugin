@@ -45,7 +45,7 @@ import {
     fetchSystemCertificates, fetchTrustedCertificates, fetchLocalCertificates,
     fetchRemoteCertificates, updateCertificates, updateCertificateAlias, removeCertificate
 } from './tlsService.js';
-import { isValidPemCertificate, isValidPemPrivateKey, parseCertificateChainFromPem, base64ToPem, base64ToPrivateKeyPem } from './certificateUtils.js';
+import { isValidPemCertificate, isValidPemPrivateKey, parseCertificateChainFromPem, base64ToPem, base64ToPrivateKeyPem, parseCertificate, getSuggestedAlias } from './certificateUtils.js';
 import { verifyCertificate } from './verificationUtils.js';
 
 const FQCN = 'org.openintegrationengine.tlsmanager.shared.properties.TLSConnectorProperties';
@@ -899,11 +899,28 @@ function TlsManagerPanel() {
         modal({ title: `Certificate — ${cert.alias}`, body, size: 'wide', buttons: [{ label: 'Close', primary: true }] });
     }
 
+    // Same wording as the bundled WebUI's ConfirmReplaceCertificateDialog, plus its
+    // channels-in-use warning for the certificate that would be replaced.
+    function confirmReplace(alias, store) {
+        const existing = (storesRef.current[store] || []).find((c) => (c.alias || '').toLowerCase() === alias.toLowerCase());
+        const chans = existing && existing.channelsInUse && existing.channelsInUse.length ? existing.channelsInUse : null;
+        let msg = `A certificate with the alias "${alias}" already exists in the ${store} store. This will replace the existing certificate. Are you sure you want to continue?`;
+        if (chans) msg += `\n\nThe existing certificate is used by ${chans.length} channel(s): ${chans.join(', ')}. Replacing it may affect those channels.`;
+        return confirmDialog('Replace Existing Certificate', msg, { okLabel: 'Replace Certificate' });
+    }
+
     async function editAlias(cert) {
         const next = await promptDialog('Edit Alias', 'Certificate alias', cert.alias);
         if (next == null) return;
         const trimmed = next.trim();
         if (!trimmed || trimmed === cert.alias) return;
+        // Match the bundled WebUI (useAliasEdit): a case-insensitive collision with a
+        // DIFFERENT entry in the same store prompts before replacing it (Java keystore
+        // aliases are case-insensitive) instead of silently overwriting it.
+        const lower = trimmed.toLowerCase();
+        const collides = (storesRef.current[cert.store] || []).some((c) =>
+            (c.alias || '').toLowerCase() === lower && (c.alias || '').toLowerCase() !== cert.alias.toLowerCase());
+        if (collides && !await confirmReplace(trimmed, cert.store)) return;
         try { await updateCertificateAlias(cert.store, cert.alias, trimmed, storesRef.current[cert.store]); toast('Alias updated', 'success'); await refresh(); }
         catch (e) { toast(e.message || 'Failed to update alias', 'error'); }
     }
@@ -936,9 +953,21 @@ function TlsManagerPanel() {
         const keyArea = store === 'private' ? h('textarea', { rows: 5, placeholder: '-----BEGIN PRIVATE KEY-----', style: { width: '100%', fontFamily: 'var(--font-mono)', fontSize: '12px' } }) : null;
         const verifyOut = h('div', { style: { marginTop: '2px' } });
         const reverify = () => verifyInto(verifyOut, pemArea.value, keyArea ? keyArea.value : null);
+        // Prefill the alias from the certificate's CN once a valid PEM is loaded
+        // (matching Swing's importCertificate), unless the user typed their own.
+        let autoAlias = '';
+        function suggestAlias() {
+            const typed = aliasInput.value.trim();
+            if (typed !== '' && typed !== autoAlias) return;   // keep a user-entered alias
+            const pem = pemArea.value.trim();
+            if (!pem || !isValidPemCertificate(pem)) return;
+            let suggested = null;
+            try { suggested = getSuggestedAlias(parseCertificate(pem)); } catch { /* ignore parse errors */ }
+            if (suggested) { aliasInput.value = suggested; autoAlias = suggested; }
+        }
         const pickCert = h('button.btn.btn-sm', { type: 'button' }, 'Choose file…');
-        pickCert.addEventListener('click', async () => { const f = await pickFile('.pem,.crt,.cer'); if (f) { pemArea.value = String(f.content || ''); reverify(); } });
-        pemArea.addEventListener('input', reverify);
+        pickCert.addEventListener('click', async () => { const f = await pickFile('.pem,.crt,.cer'); if (f) { pemArea.value = String(f.content || ''); reverify(); suggestAlias(); } });
+        pemArea.addEventListener('input', () => { reverify(); suggestAlias(); });
         const pickKey = keyArea ? h('button.btn.btn-sm', { type: 'button' }, 'Choose key file…') : null;
         if (pickKey) pickKey.addEventListener('click', async () => { const f = await pickFile('.pem,.key'); if (f) { keyArea.value = String(f.content || ''); reverify(); } });
         if (keyArea) keyArea.addEventListener('input', reverify);
@@ -959,7 +988,7 @@ function TlsManagerPanel() {
                     // Verify (chain + key match) before importing; let the user override on failure.
                     let res; try { res = verifyCertificate(pemText, store === 'private' ? keyArea.value.trim() || null : null); } catch (e) { res = { success: false, error: e.message }; }
                     if (!res.success && !await confirmDialog('Verification failed', (res.error || 'Certificate verification failed') + '\n\nImport anyway?', { danger: true, okLabel: 'Import anyway' })) return false;
-                    if (storesRef.current[store].some((c) => c.alias === alias) && !await confirmDialog('Replace?', `An entry named "${alias}" already exists. Replace it?`, { okLabel: 'Replace' })) return false;
+                    if (storesRef.current[store].some((c) => (c.alias || '').toLowerCase() === alias.toLowerCase()) && !await confirmReplace(alias, store)) return false;
                     try { await updateCertificates(store, { alias, pemText, privateKeyText: keyArea ? keyArea.value.trim() : undefined }, storesRef.current[store]); toast('Imported', 'success'); await refresh(); }
                     catch (e) { toast(e.message || 'Import failed', 'error'); return false; }
                 }
@@ -1010,7 +1039,7 @@ function TlsManagerPanel() {
                     if (!alias) { toast('Alias is required', 'warn'); return false; }
                     let res; try { res = verifyCertificate(toCertPem(chosen.certificate), null); } catch (e) { res = { success: false, error: e.message }; }
                     if (!res.success && !await confirmDialog('Verification failed', (res.error || 'Certificate verification failed') + '\n\nImport anyway?', { danger: true, okLabel: 'Import anyway' })) return false;
-                    if (storesRef.current.trusted.some((c) => c.alias === alias) && !await confirmDialog('Replace?', `An entry named "${alias}" already exists. Replace it?`, { okLabel: 'Replace' })) return false;
+                    if (storesRef.current.trusted.some((c) => (c.alias || '').toLowerCase() === alias.toLowerCase()) && !await confirmReplace(alias, 'trusted')) return false;
                     try { await updateCertificates('trusted', { alias, pemText: chosen.certificate }, storesRef.current.trusted); toast('Imported', 'success'); await refresh(); }
                     catch (e) { toast(e.message || 'Import failed', 'error'); return false; }
                 }
@@ -1072,7 +1101,7 @@ function TlsManagerPanel() {
                     if (!alias) { toast('Alias is required', 'warn'); return false; }
                     let res; try { res = verifyCertificate(chosen.certificate, null); } catch (e) { res = { success: false, error: e.message }; }
                     if (!res.success && !await confirmDialog('Verification failed', (res.error || 'Certificate verification failed') + '\n\nImport anyway?', { danger: true, okLabel: 'Import anyway' })) return false;
-                    if (storesRef.current.trusted.some((c) => c.alias === alias) && !await confirmDialog('Replace?', `An entry named "${alias}" already exists. Replace it?`, { okLabel: 'Replace' })) return false;
+                    if (storesRef.current.trusted.some((c) => (c.alias || '').toLowerCase() === alias.toLowerCase()) && !await confirmReplace(alias, 'trusted')) return false;
                     try { await updateCertificates('trusted', { alias, pemText: chosen.certificate }, storesRef.current.trusted); toast('Imported', 'success'); await refresh(); }
                     catch (e) { toast(e.message || 'Import failed', 'error'); return false; }
                 }
