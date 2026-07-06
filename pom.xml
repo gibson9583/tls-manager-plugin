@@ -11,7 +11,7 @@
 
     <groupId>org.openintegrationengine</groupId>
     <artifactId>tlsmanager</artifactId>
-    <version>1.0.6</version>
+    <version>1.0.7</version>
     <packaging>pom</packaging>
 
     <licenses>
@@ -169,6 +169,47 @@
         </pluginManagement>
 
         <plugins>
+            <!-- Build the React web admin plugin (webadmin/web/plugin.jsx ->
+                 webadmin/web/plugin.js) before it is packaged. Bound to
+                 generate-resources on the root (pom) module so it runs during
+                 `mvn install package`, ahead of build.sh's `cp -R webadmin`
+                 into the staging dir. @oie/* stay external (resolved by the
+                 host page's import map at runtime). -->
+            <plugin>
+                <groupId>com.github.eirslett</groupId>
+                <artifactId>frontend-maven-plugin</artifactId>
+                <version>1.15.1</version>
+                <!-- Build the webadmin React plugin at the aggregator root only
+                     (webadmin/ lives here, not in the server/shared/client
+                     modules); inherited=false stops the child modules from
+                     trying to npm-build a non-existent <module>/webadmin. -->
+                <inherited>false</inherited>
+                <configuration>
+                    <workingDirectory>webadmin</workingDirectory>
+                    <installDirectory>${project.build.directory}</installDirectory>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>install-node-and-npm</id>
+                        <phase>generate-resources</phase>
+                        <goals><goal>install-node-and-npm</goal></goals>
+                        <configuration><nodeVersion>v20.18.0</nodeVersion></configuration>
+                    </execution>
+                    <execution>
+                        <id>npm-install</id>
+                        <phase>generate-resources</phase>
+                        <goals><goal>npm</goal></goals>
+                        <configuration><arguments>install</arguments></configuration>
+                    </execution>
+                    <execution>
+                        <id>npm-build-webadmin</id>
+                        <phase>generate-resources</phase>
+                        <goals><goal>npm</goal></goals>
+                        <configuration><arguments>run build</arguments></configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-jarsigner-plugin</artifactId>
