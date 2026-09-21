@@ -174,17 +174,19 @@ const pickRow = (control, label) =>
 function openMultiPicker({ title, options, selected, useServerDefault, onApply }) {
     const known = new Set(options);
     const sel = new Set(selected);
-    const unknown = selected.filter((s) => !known.has(s));
+    const unknown = [...sel].filter((s) => !known.has(s));
     let useDefault = !!useServerDefault;
 
     const filterInput = textInput('', { placeholder: 'Filter…', style: { flex: '1' } });
     const listWrap = h('div', { style: { maxHeight: '320px', overflow: 'auto', border: '1px solid var(--line)', borderRadius: '4px', marginTop: '8px' } });
+    const unknownWrap = h('div');
 
     const optBoxes = new Map();
     let defaultBox = null;
 
     function build() {
         clear(listWrap);
+        clear(unknownWrap);
         const f = filterInput.value.trim().toLowerCase();
         defaultBox = h('input', { type: 'checkbox', checked: useDefault });
         defaultBox.addEventListener('change', () => {
@@ -193,22 +195,24 @@ function openMultiPicker({ title, options, selected, useServerDefault, onApply }
         });
         listWrap.appendChild(pickRow(defaultBox, '[Server default]'));
         optBoxes.clear();
-        for (const opt of options) {
-            if (f && !opt.toLowerCase().includes(f)) continue;
-            const box = h('input', { type: 'checkbox', checked: sel.has(opt) });
-            box.addEventListener('change', () => {
-                if (box.checked) { sel.add(opt); useDefault = false; if (defaultBox) defaultBox.checked = false; }
-                else sel.delete(opt);
-            });
-            optBoxes.set(opt, box);
-            listWrap.appendChild(pickRow(box, opt));
+        for (const [values, wrap] of [[options, listWrap], [unknown, unknownWrap]]) {
+            for (const opt of values) {
+                if (f && !opt.toLowerCase().includes(f)) continue;
+                const box = h('input', { type: 'checkbox', checked: sel.has(opt) });
+                box.addEventListener('change', () => {
+                    if (box.checked) { sel.add(opt); useDefault = false; if (defaultBox) defaultBox.checked = false; }
+                    else sel.delete(opt);
+                });
+                optBoxes.set(opt, box);
+                wrap.appendChild(pickRow(box, opt));
+            }
         }
     }
     build();
     filterInput.addEventListener('input', build);
 
     const link = (label, fn) => h('a', { href: '#', style: { color: 'var(--accent)' }, onClick: (e) => { e.preventDefault(); fn(); build(); } }, label);
-    const selectAll = link('Select All', () => { options.forEach((o) => sel.add(o)); useDefault = false; });
+    const selectAll = link('Select All', () => { [...options, ...unknown].forEach((o) => sel.add(o)); useDefault = false; });
     const deselectAll = link('Deselect All', () => { sel.clear(); });
 
     modal({
@@ -219,12 +223,12 @@ function openMultiPicker({ title, options, selected, useServerDefault, onApply }
             listWrap,
             unknown.length ? h('div', { style: { marginTop: '10px' } },
                 h('div.text-text-faint', { style: { fontWeight: '600', marginBottom: '4px' } }, 'Unknown Options'),
-                h('div.mono', { style: { fontSize: '12px' } }, unknown.join(', '))) : null),
+                unknownWrap) : null),
         buttons: [
             { label: 'Cancel' },
             {
                 label: 'OK', primary: true,
-                onClick: () => onApply({ useServerDefault: useDefault, selected: [...sel, ...unknown] })
+                onClick: () => onApply({ useServerDefault: useDefault, selected: [...sel] })
             }
         ]
     });
@@ -344,6 +348,23 @@ function openTrustPicker({ title, aliases, extMissing, trustSystemTruststore, se
  * removes it. */
 function TlsConnectorPanel({ getEntry, setEntry, connector, onChange }) {
     const version = String(platform.store.getState('serverVersion') || '');
+    const formRef = React.useRef(null);
+    const [server, setServer] = React.useState(() => isServerMode(connector));
+
+    // The host mounts TLS and transport settings in separate React roots. A
+    // TCP Mode edit therefore does not rerender this component. Observe the
+    // mode control within their shared tab and read the model after its handler.
+    React.useEffect(() => {
+        if (!connector.transportName.startsWith('TCP') || !formRef.current) return;
+        const eventRoot = formRef.current.closest('[role="tabpanel"]') || formRef.current.ownerDocument;
+        let active = true;
+        const syncMode = (event) => {
+            if (!event.target.closest?.('[data-fkey="serverMode"]')) return;
+            queueMicrotask(() => { if (active) setServer(isServerMode(connector)); });
+        };
+        eventRoot.addEventListener('change', syncMode);
+        return () => { active = false; eventRoot.removeEventListener('change', syncMode); };
+    }, [connector]);
 
     // The properties object the form mutates: the live entry, or a defaults draft
     // promoted to the entry on the first edit. Held in a ref so it is stable
@@ -400,7 +421,6 @@ function TlsConnectorPanel({ getEntry, setEntry, connector, onChange }) {
         : undefined;
 
     const enabled = (p) => asBool(p.isTlsManagerEnabled);
-    const server = isServerMode(connector);
 
     /* Protocols / Ciphers: a wrench-style button that opens the modal picker,
        plus a summary of the current selection (Swing Protocols/Ciphers Picker). */
@@ -439,16 +459,18 @@ function TlsConnectorPanel({ getEntry, setEntry, connector, onChange }) {
        with the chosen alias shown alongside. Falls back to manual entry when the
        plugin's keystore endpoint is unavailable. */
     function certPickerField(key, label, hint) {
+        if (!(data.localAliases && data.localAliases.length)) {
+            // A keyed React input survives ConnectorForm's change repaint;
+            // recreating a custom DOM input here drops focus on each keystroke.
+            return {
+                key, label, type: 'text', width: '260px', visible: enabled,
+                onSet: (p, value) => { p[key] = value.trim() || null; },
+                append: () => h('div.hint', aliasHint() || hint || '')
+            };
+        }
         return {
             label, type: 'custom', visible: enabled,
             render: (p, { onChange }) => {
-                if (!(data.localAliases && data.localAliases.length)) {
-                    const input = textInput(p[key] || '', {
-                        style: { width: '260px' },
-                        onInput: (e) => { p[key] = e.target.value.trim() || null; onChange(); }
-                    });
-                    return h('div', input, h('div.hint', aliasHint() || hint || ''));
-                }
                 const summary = h('span', { style: { marginLeft: '8px', fontSize: '13px' } });
                 const repaint = () => { summary.textContent = p[key] ? String(p[key]) : '<None>'; };
                 const btn = h('button.btn', { type: 'button', style: { display: 'inline-flex', alignItems: 'center', gap: '6px' } }, icon('settings'), 'Select…');
@@ -556,7 +578,7 @@ function TlsConnectorPanel({ getEntry, setEntry, connector, onChange }) {
         ];
     }
 
-    return <ConnectorForm properties={props} fields={fieldDefs()} onChange={commit} />;
+    return <div ref={formRef}><ConnectorForm properties={props} fields={fieldDefs()} onChange={commit} /></div>;
 }
 
 const tlsPanel = {
@@ -625,8 +647,8 @@ function certTableEl(certs, store, act) {
                         <td className="num">{(c.channelsInUse || []).length || ''}</td>
                         <td style={{ whiteSpace: 'nowrap', textAlign: 'right' }}>
                             <button type="button" className="btn btn-sm" onClick={() => act.openDetails(c)}>Details</button>
-                            {store !== 'native' && <button type="button" className="btn btn-sm" onClick={() => act.editAlias(c)}>Edit</button>}
-                            {store !== 'native' && <button type="button" className="btn btn-sm btn-danger" onClick={() => act.removeCert(c)}>Delete</button>}
+                            {store !== 'native' && <button type="button" className="btn btn-sm" disabled={!act.canWrite} onClick={() => act.editAlias(c)}>Edit</button>}
+                            {store !== 'native' && <button type="button" className="btn btn-sm btn-danger" disabled={!act.canWrite} onClick={() => act.removeCert(c)}>Delete</button>}
                         </td>
                     </tr>
                 );
@@ -813,24 +835,44 @@ function TlsManagerPanel() {
     const [phase, setPhase] = React.useState('loading');   // loading | ready | missing
     const [, force] = React.useReducer((x) => x + 1, 0);
     const storesRef = React.useRef({ native: [], trusted: [], private: [] });
+    const storeStateRef = React.useRef(Object.fromEntries(STORE_TABS.map(({ key }) => [key, { status: 'loading', error: '' }])));
+    const mountedRef = React.useRef(false);
+    const loadRequestRef = React.useRef(0);
+    const writePendingRef = React.useRef(false);
 
     async function loadAll() {
+        if (!mountedRef.current || writePendingRef.current) return;
+        const request = ++loadRequestRef.current;
+        for (const { key } of STORE_TABS) storeStateRef.current[key] = { status: 'loading', error: '' };
         setPhase('loading');
-        const [n, t, l] = await Promise.allSettled([fetchSystemCertificates(), fetchTrustedCertificates(), fetchLocalCertificates()]);
-        storesRef.current = {
-            native: n.status === 'fulfilled' ? n.value : [],
-            trusted: t.status === 'fulfilled' ? t.value : [],
-            private: l.status === 'fulfilled' ? l.value : []
-        };
-        const missing = [n, t, l].every((r) => r.status === 'rejected' && r.reason && (r.reason.status === 404 || r.reason.status === 501));
+        const results = await Promise.allSettled([fetchSystemCertificates(), fetchTrustedCertificates(), fetchLocalCertificates()]);
+        if (!mountedRef.current || request !== loadRequestRef.current) return;
+        STORE_TABS.forEach(({ key, label }, index) => {
+            const result = results[index];
+            if (result.status === 'fulfilled') {
+                storesRef.current[key] = result.value;
+                storeStateRef.current[key] = { status: 'ready', error: '' };
+            } else {
+                // A failed read is never an empty store. Keep any previously read
+                // rows for inspection, but prohibit whole-store writes until reload.
+                storeStateRef.current[key] = {
+                    status: 'error',
+                    error: `Unable to load ${label}. ${result.reason?.message || 'The request failed.'} Refresh successfully before making changes.`
+                };
+            }
+        });
+        const missing = results.every((r) => r.status === 'rejected' && r.reason && (r.reason.status === 404 || r.reason.status === 501));
         setPhase(missing ? 'missing' : 'ready');
         force();
     }
     const refresh = () => loadAll();
 
     React.useEffect(() => {
+        mountedRef.current = true;
         loadAll();
+        let active = true;
         api.get('/extensions/plugins').then((raw) => {
+            if (!active) return;
             for (const e of api.asList(raw && raw.entry)) {
                 if (!e || typeof e !== 'object') continue;
                 const name = Array.isArray(e.string) ? e.string[0] : e.string;
@@ -838,8 +880,46 @@ function TlsManagerPanel() {
                 if (String(name) === 'TLS Manager' && meta && meta.pluginVersion) { setVersion(String(meta.pluginVersion)); return; }
             }
         }).catch(() => { /* leave un-versioned */ });
+        return () => {
+            active = false;
+            mountedRef.current = false;
+            ++loadRequestRef.current;
+        };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+
+    // State objects are revision tokens: a refresh, failed read, or write replaces
+    // them. A dialog cannot apply an approval obtained for an older store state.
+    function writableStore(store, expected) {
+        const state = storeStateRef.current[store];
+        if (mountedRef.current && !writePendingRef.current && state?.status === 'ready' && (!expected || expected === state)) return state;
+        if (mountedRef.current) toast('The certificate store changed or is unavailable. Refresh and try again.', 'warn');
+        return null;
+    }
+
+    async function writeStore(store, expected, operation, successMessage, failureMessage) {
+        if (!writableStore(store, expected)) return false;
+        writePendingRef.current = true;
+        storeStateRef.current[store] = { status: 'saving', error: '' };
+        force();
+        let succeeded = false;
+        try {
+            await operation(storesRef.current[store]);
+            succeeded = true;
+            if (mountedRef.current) toast(successMessage, 'success');
+        } catch (e) {
+            // A rejected response can also represent an uncertain server commit.
+            // Require a fresh read before another whole-store mutation or retry.
+            storeStateRef.current[store] = { status: 'error', error: 'The save could not be confirmed. Refresh successfully before making changes.' };
+            if (mountedRef.current) toast(e.message || failureMessage, 'error');
+        } finally {
+            writePendingRef.current = false;
+        }
+        if (mountedRef.current) {
+            if (succeeded) await refresh(); else force();
+        }
+        return succeeded;
+    }
 
     /* ---- imperative dialogs (modal + h, like the connector pickers above) ---- */
 
@@ -910,8 +990,11 @@ function TlsManagerPanel() {
     }
 
     async function editAlias(cert) {
+        const state = writableStore(cert.store);
+        if (!state || !storesRef.current[cert.store].includes(cert)) return;
         const next = await promptDialog('Edit Alias', 'Certificate alias', cert.alias);
         if (next == null) return;
+        if (!writableStore(cert.store, state)) return;
         const trimmed = next.trim();
         if (!trimmed || trimmed === cert.alias) return;
         // Match the bundled WebUI (useAliasEdit): a case-insensitive collision with a
@@ -921,18 +1004,18 @@ function TlsManagerPanel() {
         const collides = (storesRef.current[cert.store] || []).some((c) =>
             (c.alias || '').toLowerCase() === lower && (c.alias || '').toLowerCase() !== cert.alias.toLowerCase());
         if (collides && !await confirmReplace(trimmed, cert.store)) return;
-        try { await updateCertificateAlias(cert.store, cert.alias, trimmed, storesRef.current[cert.store]); toast('Alias updated', 'success'); await refresh(); }
-        catch (e) { toast(e.message || 'Failed to update alias', 'error'); }
+        await writeStore(cert.store, state, (current) => updateCertificateAlias(cert.store, cert.alias, trimmed, current), 'Alias updated', 'Failed to update alias');
     }
 
     async function removeCert(cert) {
+        const state = writableStore(cert.store);
+        if (!state || !storesRef.current[cert.store].includes(cert)) return;
         const inUse = cert.channelsInUse && cert.channelsInUse.length;
         const msg = inUse
             ? `"${cert.alias}" is used by ${inUse} channel(s): ${cert.channelsInUse.join(', ')}. Removing it may break TLS on those channels. Continue?`
             : `Remove "${cert.alias}"? This cannot be undone.`;
         if (!await confirmDialog('Remove Certificate', msg, { danger: true, okLabel: 'Remove' })) return;
-        try { await removeCertificate(cert.store, cert.alias, storesRef.current[cert.store]); toast('Certificate removed', 'success'); await refresh(); }
-        catch (e) { toast(e.message || 'Failed to remove certificate', 'error'); }
+        await writeStore(cert.store, state, (current) => removeCertificate(cert.store, cert.alias, current), 'Certificate removed', 'Failed to remove certificate');
     }
 
     /* Live verification for the import dialogs: render verifyCertificate() into
@@ -948,6 +1031,7 @@ function TlsManagerPanel() {
     }
 
     function openImportFile(store) {
+        if (!writableStore(store)) return;
         const aliasInput = textInput('', { placeholder: 'Alias', style: { width: '240px' } });
         const pemArea = h('textarea', { rows: 6, placeholder: '-----BEGIN CERTIFICATE-----', style: { width: '100%', fontFamily: 'var(--font-mono)', fontSize: '12px' } });
         const keyArea = store === 'private' ? h('textarea', { rows: 5, placeholder: '-----BEGIN PRIVATE KEY-----', style: { width: '100%', fontFamily: 'var(--font-mono)', fontSize: '12px' } }) : null;
@@ -980,36 +1064,67 @@ function TlsManagerPanel() {
             title: store === 'private' ? 'Import Key Pair' : 'Import Trusted Certificate', body, size: 'wide',
             buttons: [{ label: 'Cancel' }, {
                 label: 'Import', primary: true, onClick: async () => {
+                    const state = writableStore(store);
+                    if (!state) return false;
                     const alias = aliasInput.value.trim();
                     const pemText = pemArea.value.trim();
+                    const privateKeyText = keyArea ? keyArea.value.trim() : undefined;
                     if (!alias) { toast('Alias is required', 'warn'); return false; }
                     if (!isValidPemCertificate(pemText)) { toast('Not a valid PEM certificate', 'error'); return false; }
-                    if (store === 'private' && !isValidPemPrivateKey(keyArea.value.trim())) { toast('Not a valid PEM private key', 'error'); return false; }
+                    if (store === 'private' && !isValidPemPrivateKey(privateKeyText)) { toast('Not a valid PEM private key', 'error'); return false; }
                     // Verify (chain + key match) before importing; let the user override on failure.
-                    let res; try { res = verifyCertificate(pemText, store === 'private' ? keyArea.value.trim() || null : null); } catch (e) { res = { success: false, error: e.message }; }
+                    let res; try { res = verifyCertificate(pemText, privateKeyText || null); } catch (e) { res = { success: false, error: e.message }; }
                     if (!res.success && !await confirmDialog('Verification failed', (res.error || 'Certificate verification failed') + '\n\nImport anyway?', { danger: true, okLabel: 'Import anyway' })) return false;
+                    if (!writableStore(store, state)) return false;
                     if (storesRef.current[store].some((c) => (c.alias || '').toLowerCase() === alias.toLowerCase()) && !await confirmReplace(alias, store)) return false;
-                    try { await updateCertificates(store, { alias, pemText, privateKeyText: keyArea ? keyArea.value.trim() : undefined }, storesRef.current[store]); toast('Imported', 'success'); await refresh(); }
-                    catch (e) { toast(e.message || 'Import failed', 'error'); return false; }
+                    return writeStore(store, state, (current) => updateCertificates(store, { alias, pemText, privateKeyText }, current), 'Imported', 'Import failed');
                 }
             }]
         });
     }
 
     function openImportUrl() {
+        if (!writableStore('trusted')) return;
         const urlInput = textInput('https://', { style: { flex: '1' } });
         const aliasInput = textInput('', { placeholder: 'Alias', style: { width: '240px' } });
         const heading = h('div', { style: { fontWeight: '600', fontSize: '13px', display: 'none' } }, 'Select a certificate to import');
         const listWrap = h('div', { style: { flexDirection: 'column', gap: '6px', maxHeight: '260px', overflow: 'auto', display: 'none' } });
         const verifyOut = h('div', { style: { marginTop: '2px' } });
         let chosen = null;
+        let selectedUrl = null;
+        let requestRevision = 0;
+        let pending = false;
+        let closed = false;
         const rows = [];
         const choose = (c) => { chosen = c; if (c.alias) aliasInput.value = c.alias; verifyInto(verifyOut, toCertPem(c.certificate), null); };
         const fetchBtn = h('button.btn.btn-sm', { type: 'button' }, 'Fetch');
+        function invalidateSelection() {
+            ++requestRevision;
+            chosen = null;
+            selectedUrl = null;
+            pending = false;
+            rows.length = 0;
+            clear(listWrap); clear(verifyOut);
+            heading.style.display = 'none';
+            listWrap.style.display = 'none';
+            aliasInput.value = '';
+            fetchBtn.disabled = false;
+            fetchBtn.textContent = 'Fetch';
+        }
+        urlInput.addEventListener('input', invalidateSelection);
         fetchBtn.addEventListener('click', async () => {
+            if (closed || !mountedRef.current || pending) return;
+            const url = urlInput.value.trim();
+            invalidateSelection();
+            const request = requestRevision;
+            const isCurrent = () => !closed && mountedRef.current && request === requestRevision && urlInput.value.trim() === url;
+            pending = true;
+            fetchBtn.disabled = true;
+            fetchBtn.textContent = 'Fetching…';
             try {
-                const certs = await fetchRemoteCertificates(urlInput.value.trim());
-                clear(listWrap); clear(verifyOut); rows.length = 0; chosen = null;
+                const certs = await fetchRemoteCertificates(url);
+                if (!isCurrent()) return;
+                selectedUrl = url;
                 heading.style.display = certs.length ? 'block' : 'none';
                 listWrap.style.display = certs.length ? 'flex' : 'none';
                 const name = 'tlsremote-' + Math.random().toString(36).slice(2);
@@ -1019,29 +1134,50 @@ function TlsManagerPanel() {
                         primary: c.alias || c.name || c.subject,
                         secondary: c.subject,
                         badge: c.type && c.type !== 'Unknown' ? c.type : null,
-                        onSelect: () => { choose(c); rows.forEach((r) => r.paint()); }
+                        onSelect: () => { if (isCurrent()) { choose(c); rows.forEach((r) => r.paint()); } }
                     });
                     rows.push(row);
                     listWrap.appendChild(row.el);
                 });
                 if (certs.length) choose(certs[0]); else toast('No certificates returned', 'warn');
-            } catch (e) { toast(e.message || 'Fetch failed', 'error'); }
+            } catch (e) {
+                if (isCurrent()) toast(e.message || 'Fetch failed', 'error');
+            } finally {
+                if (isCurrent()) {
+                    pending = false;
+                    fetchBtn.disabled = false;
+                    fetchBtn.textContent = 'Fetch';
+                }
+            }
         });
         const body = h('div', { style: { minWidth: '560px', display: 'flex', flexDirection: 'column', gap: '8px' } },
             h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' } }, h('label', 'URL'), urlInput, fetchBtn),
             heading, listWrap, h('label', 'Alias'), aliasInput, verifyOut);
         modal({
             title: 'Import Certificate from URL', body, size: 'wide',
+            onClose: () => { closed = true; ++requestRevision; },
             buttons: [{ label: 'Cancel' }, {
                 label: 'Import', primary: true, onClick: async () => {
-                    if (!chosen) { toast('Fetch and select a certificate first', 'warn'); return false; }
+                    const state = writableStore('trusted');
+                    if (!state) return false;
+                    if (closed || pending || !chosen || selectedUrl !== urlInput.value.trim()) { toast('Fetch and select a certificate for the current URL first', 'warn'); return false; }
+                    const selected = chosen;
+                    const request = requestRevision;
+                    const url = selectedUrl;
                     const alias = aliasInput.value.trim();
                     if (!alias) { toast('Alias is required', 'warn'); return false; }
-                    let res; try { res = verifyCertificate(toCertPem(chosen.certificate), null); } catch (e) { res = { success: false, error: e.message }; }
+                    const stillSelected = () => {
+                        if (!closed && !pending && request === requestRevision && chosen === selected && urlInput.value.trim() === url && aliasInput.value.trim() === alias) return true;
+                        if (!closed && mountedRef.current) toast('The URL or certificate selection changed. Fetch and select a certificate again.', 'warn');
+                        return false;
+                    };
+                    const pemText = selected.certificate;
+                    let res; try { res = verifyCertificate(toCertPem(pemText), null); } catch (e) { res = { success: false, error: e.message }; }
                     if (!res.success && !await confirmDialog('Verification failed', (res.error || 'Certificate verification failed') + '\n\nImport anyway?', { danger: true, okLabel: 'Import anyway' })) return false;
+                    if (!stillSelected() || !writableStore('trusted', state)) return false;
                     if (storesRef.current.trusted.some((c) => (c.alias || '').toLowerCase() === alias.toLowerCase()) && !await confirmReplace(alias, 'trusted')) return false;
-                    try { await updateCertificates('trusted', { alias, pemText: chosen.certificate }, storesRef.current.trusted); toast('Imported', 'success'); await refresh(); }
-                    catch (e) { toast(e.message || 'Import failed', 'error'); return false; }
+                    if (!stillSelected()) return false;
+                    return writeStore('trusted', state, (current) => updateCertificates('trusted', { alias, pemText }, current), 'Imported', 'Import failed');
                 }
             }]
         });
@@ -1052,6 +1188,7 @@ function TlsManagerPanel() {
      * ImportCertificateChainDialog — only the chosen cert is stored, not the
      * whole bundle). Verification of the selection is shown live and gates import. */
     function openImportChain() {
+        if (!writableStore('trusted')) return;
         const aliasInput = textInput('', { placeholder: 'Alias', style: { width: '240px' } });
         const pemArea = h('textarea', { rows: 6, placeholder: '-----BEGIN CERTIFICATE-----\n…\n-----END CERTIFICATE-----\n-----BEGIN CERTIFICATE-----\n…', style: { width: '100%', fontFamily: 'var(--font-mono)', fontSize: '12px' } });
         const foundMsg = h('div.hint', { style: { display: 'none' } });
@@ -1096,14 +1233,17 @@ function TlsManagerPanel() {
             title: 'Import Certificate Chain', body, size: 'wide',
             buttons: [{ label: 'Cancel' }, {
                 label: 'Import', primary: true, onClick: async () => {
+                    const state = writableStore('trusted');
+                    if (!state) return false;
                     if (!chosen) { toast('Paste a chain and select a certificate', 'warn'); return false; }
+                    const certificate = chosen.certificate;
                     const alias = aliasInput.value.trim();
                     if (!alias) { toast('Alias is required', 'warn'); return false; }
-                    let res; try { res = verifyCertificate(chosen.certificate, null); } catch (e) { res = { success: false, error: e.message }; }
+                    let res; try { res = verifyCertificate(certificate, null); } catch (e) { res = { success: false, error: e.message }; }
                     if (!res.success && !await confirmDialog('Verification failed', (res.error || 'Certificate verification failed') + '\n\nImport anyway?', { danger: true, okLabel: 'Import anyway' })) return false;
+                    if (!writableStore('trusted', state)) return false;
                     if (storesRef.current.trusted.some((c) => (c.alias || '').toLowerCase() === alias.toLowerCase()) && !await confirmReplace(alias, 'trusted')) return false;
-                    try { await updateCertificates('trusted', { alias, pemText: chosen.certificate }, storesRef.current.trusted); toast('Imported', 'success'); await refresh(); }
-                    catch (e) { toast(e.message || 'Import failed', 'error'); return false; }
+                    return writeStore('trusted', state, (current) => updateCertificates('trusted', { alias, pemText: certificate }, current), 'Imported', 'Import failed');
                 }
             }]
         });
@@ -1123,7 +1263,9 @@ function TlsManagerPanel() {
     }
 
     const tabDef = STORE_TABS.find((t) => t.key === tab) || STORE_TABS[0];
-    const act = { openDetails, editAlias, removeCert };
+    const storeState = storeStateRef.current[tab];
+    const canWrite = storeState.status === 'ready' && !writePendingRef.current;
+    const act = { openDetails, editAlias, removeCert, canWrite };
 
     return (
         <div>
@@ -1138,15 +1280,16 @@ function TlsManagerPanel() {
                 <div className="panel-header">
                     {tabDef.label}
                     <div className="panel-tools">
-                        <button type="button" className="btn btn-sm" onClick={refresh}>Refresh</button>
-                        {tab === 'trusted' && <button type="button" className="btn btn-sm" onClick={() => openImportFile('trusted')}>Import Certificate</button>}
-                        {tab === 'trusted' && <button type="button" className="btn btn-sm" onClick={openImportChain}>Import Chain</button>}
-                        {tab === 'trusted' && <button type="button" className="btn btn-sm" onClick={openImportUrl}>Import from URL</button>}
-                        {tab === 'private' && <button type="button" className="btn btn-sm btn-primary" onClick={() => openImportFile('private')}>Import Key Pair</button>}
+                        <button type="button" className="btn btn-sm" disabled={writePendingRef.current} onClick={refresh}>Refresh</button>
+                        {tab === 'trusted' && <button type="button" className="btn btn-sm" disabled={!canWrite} onClick={() => openImportFile('trusted')}>Import Certificate</button>}
+                        {tab === 'trusted' && <button type="button" className="btn btn-sm" disabled={!canWrite} onClick={openImportChain}>Import Chain</button>}
+                        {tab === 'trusted' && <button type="button" className="btn btn-sm" disabled={!canWrite} onClick={openImportUrl}>Import from URL</button>}
+                        {tab === 'private' && <button type="button" className="btn btn-sm btn-primary" disabled={!canWrite} onClick={() => openImportFile('private')}>Import Key Pair</button>}
                     </div>
                 </div>
                 <div className="panel-body flush">
                     {tabDef.readonly && <div className="hint" style={{ padding: '8px 14px' }}>Read-only system truststore (from the engine's JRE).</div>}
+                    {storeState.error && <div role="alert" style={{ padding: '12px 14px', color: 'var(--err)' }}>{storeState.error}</div>}
                     {certTableEl(storesRef.current[tab], tab, act)}
                 </div>
             </div>
