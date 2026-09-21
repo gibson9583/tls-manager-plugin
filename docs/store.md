@@ -27,7 +27,7 @@ available in the administrator.
 
 ## Configuration & usage
 
-See the [project README](https://github.com/gibson9583/tls-manager-plugin#readme)
+See the [project README](https://github.com/NovaMap-Health/tls-manager-plugin#readme)
 for keystore setup, connector TLS options, and the certificate management workflow.
 
 ## License
@@ -37,4 +37,4 @@ Dual-licensed **Apache-2.0** / **MPL-2.0**. Original project by NovaMap Health.
 ## Support
 
 Report issues at
-[github.com/gibson9583/tls-manager-plugin/issues](https://github.com/gibson9583/tls-manager-plugin/issues).
+[github.com/NovaMap-Health/tls-manager-plugin/issues](https://github.com/NovaMap-Health/tls-manager-plugin/issues).
