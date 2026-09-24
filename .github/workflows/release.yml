@@ -1,12 +1,11 @@
-# Publishes the TLS Manager plugin to GitHub Releases in the shape the OIE
-# Community Store expects: the extension zip plus its .sha256 sidecar, on a semver
-# tag.
+# Publishes the TLS Manager plugin to GitHub Releases: the extension zip plus its
+# .sha256 sidecar, on a semver tag.
 #
 #   git tag v1.0.7 && git push origin v1.0.7
 #
 # Uses the repo's own build.sh (which builds the engine plugin AND the web-ui WAR
 # and bundles them into target/tls-manager-<hash>.zip); the workflow then renames
-# that artifact to the version-matched asset the store installs.
+# that artifact to a version-matched release asset.
 
 name: Release
 
@@ -36,23 +35,13 @@ jobs:
         with:
           node-version-file: web-ui/.nvmrc
 
-      # Derive the version from the tag and fail fast if oie.json disagrees.
-      - name: Resolve and verify version
+      - name: Resolve version from the tag
         id: ver
-        run: |
-          TAG="${GITHUB_REF_NAME}"
-          VERSION="${TAG#v}"
-          MANIFEST_VERSION="$(jq -r .version oie.json)"
-          if [ "$VERSION" != "$MANIFEST_VERSION" ]; then
-            echo "::error::Tag $TAG implies version $VERSION but oie.json says $MANIFEST_VERSION"
-            exit 1
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      # versions:set makes the tag the source of truth so the generated plugin.xml's
-      # pluginVersion matches oie.json (otherwise the engine reports the pom version as
-      # "installed" and the store shows a perpetual update). build.sh's `mvn clean` does
-      # not revert the pom edit, so the set version carries into the build.
+      # versions:set makes the tag the source of truth for the generated plugin.xml's
+      # pluginVersion. build.sh's `mvn clean` does not revert the pom edit, so the set
+      # version carries into the build.
       - name: Build plugin bundle
         run: |
           mvn -B -ntp versions:set -DnewVersion="${{ steps.ver.outputs.version }}" -DprocessAllModules=true -DgenerateBackupPoms=false
@@ -78,5 +67,5 @@ jobs:
           files: |
             out/${{ steps.pkg.outputs.asset }}
             out/${{ steps.pkg.outputs.asset }}.sha256
-          # Tags like v1.0.7-rc1 publish as pre-releases (store beta channel only).
+          # Tags like v1.0.7-rc1 publish as pre-releases.
           prerelease: ${{ contains(github.ref_name, '-') }}
