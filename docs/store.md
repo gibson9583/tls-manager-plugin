@@ -1,5 +1,7 @@
 # TLS Manager
 
+Engine compatibility for the prepared 1.0.8 release: **OIE 4.6.0 and 4.7.0 only**. See the [release preparation notes](oie-4.6-4.7-release.md) for validation status.
+
 TLS-enabled networking and certificate management for Open Integration Engine. The
 plugin adds a **TLS Settings** section to supported connectors and a **certificate
 management** view for issuing, importing, and managing the keystore material those
@@ -16,7 +18,7 @@ connectors use.
 
 ## Requirements
 
-- Open Integration Engine **4.5.2** or newer.
+- Open Integration Engine **4.6.0 or 4.7.0**.
 - An engine restart after install to activate the plugin and its connectors.
 
 ## Installing

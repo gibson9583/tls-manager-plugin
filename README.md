@@ -1,5 +1,7 @@
 # TLS Manager Plugin for Open Integration Engine
 
+Release 1.0.8 is being prepared with engine compatibility limited to OIE **4.6.0 and 4.7.0**. Runtime validation on the final 4.7.0 release is pending; see the [release preparation notes](docs/oie-4.6-4.7-release.md).
+
 # Introduction
 
 This TLS Manager Plugin for OIE has been sponsored by [NovaMap Health Limited](https://www.novamap.health/) (UK) and [Diridium Technologies Inc.](https://diridium.com/) (USA) and donated to the Open Integration Engine initiative. Copyright is retained by NovaMap Health Limited but is licensed under MPL 2.0.
